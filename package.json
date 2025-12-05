@@ -1,0 +1,39 @@
+{
+  "name": "gtfs-static-importer",
+  "version": "1.0.0",
+  "description": "High-performance GTFS static data importer to SQLite (Node.js + TypeScript)",
+  "type": "module",
+  "main": "dist/index.js",
+  "packageManager": "pnpm@10.24.0",
+  "bin": {
+    "gtfs-import": "dist/app/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/app/cli.ts import",
+    "db:init": "tsx src/app/cli.ts init",
+    "gtfs:import": "tsx src/app/cli.ts import",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/app/cli.js",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "csv-parse": "^6.1.0",
+    "unzipper": "^0.12.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^8.48.1",
+    "@typescript-eslint/parser": "^8.48.1",
+    "eslint": "^9.39.1",
+    "prettier": "^3.7.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
