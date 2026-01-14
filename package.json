@@ -12,6 +12,7 @@
     "dev": "tsx src/app/cli.ts import",
     "db:init": "tsx src/app/cli.ts init",
     "gtfs:import": "tsx src/app/cli.ts import",
+    "scheduler": "tsx src/scheduler.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/app/cli.js",
     "lint": "eslint \"src/**/*.ts\"",

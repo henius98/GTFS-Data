@@ -29,6 +29,39 @@ function normalize(name: string): string {
   return name.toLowerCase();
 }
 
+function getTableColumns(
+  db: Database.Database,
+  tableName: string
+): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info("${tableName}")`).all();
+  return new Set(rows.map(row => String(row.name)));
+}
+
+function buildPreparedInsert(
+  db: Database.Database,
+  tableName: string,
+  columns: string[],
+  upsert: UpsertInfo | null
+): Database.Statement {
+  const columnList = columns.map(c => `"${c}"`).join(',');
+  const placeholders = columns.map(() => '?').join(',');
+  let sql = `INSERT INTO "${tableName}" (${columnList}) VALUES (${placeholders})`;
+
+  if (upsert?.pkColumns.length) {
+    const conflictTarget = upsert.pkColumns.map(c => `"${c}"`).join(',');
+    if (upsert.updatableColumns.length) {
+      const setClause = upsert.updatableColumns
+        .map(c => `"${c}" = excluded."${c}"`)
+        .join(',');
+      sql += ` ON CONFLICT(${conflictTarget}) DO UPDATE SET ${setClause}`;
+    } else {
+      sql += ` ON CONFLICT(${conflictTarget}) DO NOTHING`;
+    }
+  }
+
+  return db.prepare(sql);
+}
+
 function getUpsertInfo(tableName: string, headers: string[]): UpsertInfo | null {
   const pkFromMap = TABLE_PRIMARY_KEYS[normalize(tableName)];
   if (!pkFromMap) return null;
@@ -41,49 +74,6 @@ function getUpsertInfo(tableName: string, headers: string[]): UpsertInfo | null 
   const updatableColumns = headers.filter(h => !pkSet.has(normalize(h)));
 
   return { pkColumns, updatableColumns };
-}
-
-function escapeSqlString(value: string | null | undefined): string {
-  if (value == null) return "''";
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function appendOnConflictClause(
-  baseSql: string,
-  upsert: UpsertInfo | null
-): string {
-  if (!upsert || upsert.pkColumns.length === 0) {
-    return `${baseSql};`;
-  }
-
-  const conflictTarget = upsert.pkColumns.map(c => `"${c}"`).join(',');
-  if (upsert.updatableColumns.length === 0) {
-    return `${baseSql} ON CONFLICT(${conflictTarget}) DO NOTHING;`;
-  }
-
-  const setClause = upsert.updatableColumns
-    .map(c => `"${c}" = excluded."${c}"`)
-    .join(',');
-
-  return `${baseSql} ON CONFLICT(${conflictTarget}) DO UPDATE SET ${setClause};`;
-}
-
-function buildInsertSql(
-  tableName: string,
-  headers: string[],
-  rows: string[][],
-  upsert: UpsertInfo | null
-): string {
-  const columnList = headers.map(h => `"${h}"`).join(',');
-  const values = rows
-    .map(row => {
-      const vals = headers.map((_, idx) => escapeSqlString(row[idx]));
-      return `(${vals.join(',')})`;
-    })
-    .join(',');
-
-  const baseSql = `INSERT INTO "${tableName}" (${columnList}) VALUES ${values}`;
-  return appendOnConflictClause(baseSql, upsert);
 }
 
 export class GtfsSqliteWriter {
@@ -149,18 +139,33 @@ export class GtfsSqliteWriter {
     const BATCH_SIZE = this.batchSize;
 
     let headers: string[] | null = null;
+    let columnIndexes: number[] = [];
     let upsertInfo: UpsertInfo | null = null;
     let batch: string[][] = [];
     let rowCount = 0;
 
-    db.exec('BEGIN TRANSACTION');
+    const tableColumns = getTableColumns(db, tableName);
+    const insertBatch = db.transaction(
+      (stmt: Database.Statement, rows: string[][], indexes: number[]) => {
+        for (const row of rows) {
+          const values = indexes.map(idx => {
+            const value = row[idx];
+            return value === '' ? null : value;
+          });
+          stmt.run(values);
+        }
+      }
+    );
 
     try {
       for await (const record of parser) {
         if (!headers) {
-          headers = record.map(h => h.trim());
+          const rawHeaders = record.map(h => h.trim());
+          headers = rawHeaders.filter(h => tableColumns.has(h));
+          columnIndexes = rawHeaders
+            .map((h, idx) => (tableColumns.has(h) ? idx : -1))
+            .filter(idx => idx >= 0);
           if (headers.length === 0) {
-            db.exec('ROLLBACK');
             return;
           }
 
@@ -168,28 +173,29 @@ export class GtfsSqliteWriter {
           continue;
         }
 
+        if (!headers || columnIndexes.length === 0) {
+          continue;
+        }
+
         batch.push(record);
         rowCount++;
 
         if (batch.length >= BATCH_SIZE) {
-          const sql = buildInsertSql(tableName, headers, batch, upsertInfo);
-          db.exec(sql);
+          const stmt = buildPreparedInsert(db, tableName, headers, upsertInfo);
+          insertBatch(stmt, batch, columnIndexes);
           batch = [];
         }
       }
 
       if (headers && batch.length > 0) {
-        const sql = buildInsertSql(tableName, headers, batch, upsertInfo);
-        db.exec(sql);
+        const stmt = buildPreparedInsert(db, tableName, headers, upsertInfo);
+        insertBatch(stmt, batch, columnIndexes);
       }
-
-      db.exec('COMMIT');
       this.logger?.info('Upserted rows into table', {
         tableName,
         rowCount
       });
     } catch (err) {
-      db.exec('ROLLBACK');
       this.logger?.error('Error processing GTFS file', {
         tableName,
         error: (err as Error).message
